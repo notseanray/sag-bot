@@ -19,6 +19,7 @@ import (
 )
 
 const MAX_LINE_LENGTH = 2048
+const MAX_LOG_FILE_LENTH = 4000
 
 var current_line = 0
 var regex = regexp.MustCompile(`^\[\d{2}:\d{2}:\d{2}\] \[Server thread/INFO\]: (<.*|[\w ]+ (joined|left) the game)$`)
@@ -31,6 +32,7 @@ var insults = []string{}
 type Config struct {
 	TOKEN      string
 	CHATBRIDGE string
+	ADMINROLE  string
 }
 
 var config = Config{}
@@ -70,6 +72,15 @@ func parse_bridge() {
 			// send to dis
 			messageCache = append(messageCache, line[33:])
 		}
+	}
+
+	if current_line > MAX_LINE_LENGTH {
+		err := os.Remove("/tmp/SAG-bot")
+		if err != nil {
+			fmt.Println(err)
+		}
+		cmd := exec.Command("tmux", "pipe-pane", "-t", "SAG", "cat > /tmp/SAG-bot")
+		cmd.Output()
 	}
 }
 
@@ -166,7 +177,7 @@ func check_line(line string) {
 		if assemble_message(t, m) {
 			ban_person(username[0])
 			messageCache = append(messageCache, fmt.Sprintf(
-				"%s was banned for 24 hours, timestamp: %d/%d %d:%d:%d",
+				"%s was banned for 24 hours, timestamp: %02d/%02d %02d:%02d:%02d",
 				username[0],
 				dt.Local().Month(),
 				dt.Local().Day(),
@@ -187,7 +198,7 @@ func check_line(line string) {
 func ban_person(username string) {
 	bans = append(bans, Ban{
 		name:    username,
-		expires: time.Now().Unix() + 10,
+		expires: time.Now().Unix() + 86400,
 	})
 	save_banlist()
 	dt := time.Now()
@@ -197,7 +208,7 @@ func ban_person(username string) {
 		"-t",
 		"SAG",
 		fmt.Sprintf(
-			"ban %s Banned for 24 hours from %d/%d %d:%d:%d",
+			"ban %s Banned for 24 hours from %02d/%02d %02d:%02d:%02d",
 			username,
 			dt.Local().Month(),
 			dt.Local().Day(),
@@ -265,6 +276,23 @@ func clearFormattingOutbound(message string) string {
 	return message
 }
 
+func includes(roles []string, target string) bool {
+	for _, i := range roles {
+		if i == target {
+			return true
+		}
+	}
+	return false
+}
+
+func formatDuration(d uint64) string {
+	h := d / 3600
+	d -= h * 3600
+	m := d / 60
+	d -= m * 60
+	return fmt.Sprintf("%02d:%02d:%02d", h, m, d)
+}
+
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author.ID == s.State.User.ID {
 		return
@@ -278,7 +306,35 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		cmd.Output()
 	}
 	splits := strings.Fields(m.Content)
-	if len(splits) < 2 {
+	if len(splits) < 1 {
+		return
+	}
+
+	if splits[0] == "listbans" {
+		banList := []string{}
+		for _, ban := range bans {
+			banList = append(
+				banList,
+				fmt.Sprintf(
+					"IGN: %s \t %s left until unban (HR:MM:SS)",
+					ban.name,
+					formatDuration(uint64(ban.expires)-uint64(time.Now().Unix())),
+				),
+			)
+		}
+		s.ChannelMessageSend(m.ChannelID, strings.Join(banList, "\n"))
+		if len(banList) < 1 {
+			s.ChannelMessageSend(m.ChannelID, "no bans at this time")
+		}
+	}
+
+	if splits[0] == "listinsult" {
+		s.ChannelMessageSend(m.ChannelID, strings.Join(insults, "\n"))
+		if len(insults) < 1 {
+			s.ChannelMessageSend(m.ChannelID, "no insults registered")
+		}
+	}
+	if !includes(m.Member.Roles, config.ADMINROLE) || len(splits) < 2 {
 		return
 	}
 	if splits[0] == "insult" {
@@ -290,9 +346,6 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		insults = remove(insults, strings.Join(splits[1:], " "))
 		s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("removed %s", strings.Join(splits[1:], " ")))
 		save_insults()
-	}
-	if splits[0] == "listinsult" {
-		s.ChannelMessageSend(m.ChannelID, strings.Join(insults, "\n"))
 	}
 }
 
