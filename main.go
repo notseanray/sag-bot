@@ -21,9 +21,9 @@ import (
 const MAX_LINE_LENGTH = 2048
 const MAX_LOG_FILE_LENTH = 4000
 
-var current_line = 0
+var current_line = map[string]int{}
 var regex = regexp.MustCompile(`^\[\d{2}:\d{2}:\d{2}\] \[Server thread/INFO\]: (<.*|[\w ]+ (joined|left) the game)$`)
-var first = true
+var first = map[string]bool{}
 
 var messageCache = []string{}
 
@@ -33,13 +33,14 @@ type Config struct {
 	TOKEN      string
 	CHATBRIDGE string
 	ADMINROLE  string
+	BANROLE    string
+	SESSION    []string
 }
 
 var config = Config{}
 
-func parse_bridge() {
-	// TODO replace with cli arg?
-	file, err := os.Open("/tmp/SAG-bot")
+func parse_bridge(session string) {
+	file, err := os.Open(fmt.Sprintf("/tmp/%s-bot", session))
 	if err != nil {
 		return
 	}
@@ -50,36 +51,48 @@ func parse_bridge() {
 	i := 0
 	for scanner.Scan() {
 		i++
-		if i < current_line {
+		if i < current_line[session] {
 			continue
 		}
-		current_line = i
+		current_line[session] = i
 		contents = append(contents, scanner.Text())
 	}
-	current_line = i + 1
-	if first {
-		first = false
+	current_line[session] = i + 1
+	file.Close()
+	if first[session] {
+		first[session] = false
 		return
 	}
-	file.Close()
 
 	for _, line := range contents {
 		if len(line) <= 33 {
 			continue
 		}
-		check_line(line[33:])
+		if len(line) > 43 {
+			if line[33:43] == "There are " {
+				playList := strings.Fields(line[33:])
+				nameList := ""
+				if len(playList) > 10 {
+					nameList = strings.Join(playList[10:], " ")
+				}
+				messageCache = append(messageCache, fmt.Sprintf("%s: [%s/%s]\n%s", session, playList[2], playList[7], nameList))
+			}
+		}
+		if !strings.Contains(session, "CMP") {
+			check_line(line[33:])
+		}
 		if regex.Match([]byte(line)) {
 			// send to dis
-			messageCache = append(messageCache, line[33:])
+			messageCache = append(messageCache, fmt.Sprintf("[%s] ", session) + line[33:])
 		}
 	}
 
-	if current_line > MAX_LINE_LENGTH {
-		err := os.Remove("/tmp/SAG-bot")
+	if current_line[session] > MAX_LINE_LENGTH {
+		err := os.Remove(fmt.Sprintf("/tmp/%s-bot", session))
 		if err != nil {
 			fmt.Println(err)
 		}
-		cmd := exec.Command("tmux", "pipe-pane", "-t", "SAG", "cat > /tmp/SAG-bot")
+		cmd := exec.Command("tmux", "pipe-pane", "-t", session, fmt.Sprintf("cat > /tmp/%s-bot", session))
 		cmd.Output()
 	}
 }
@@ -177,7 +190,7 @@ func check_line(line string) {
 		if assemble_message(t, m) {
 			ban_person(username[0])
 			messageCache = append(messageCache, fmt.Sprintf(
-				"%s was banned for 24 hours, timestamp: %02d/%02d %02d:%02d:%02d",
+				"%s was banned for 12 hours, timestamp: %02d/%02d %02d:%02d:%02d",
 				username[0],
 				dt.Local().Month(),
 				dt.Local().Day(),
@@ -190,6 +203,7 @@ func check_line(line string) {
 			}
 			randomI := rand.Int() % len(insults)
 			messageCache = append(messageCache, strings.ReplaceAll(insults[randomI], "NAME", username[0]))
+			messageCache = append(messageCache, fmt.Sprintf("new ban <@&%s>", config.BANROLE))
 		}
 	}
 
@@ -198,7 +212,7 @@ func check_line(line string) {
 func ban_person(username string) {
 	bans = append(bans, Ban{
 		name:    username,
-		expires: time.Now().Unix() + 86400,
+		expires: time.Now().Unix() + 43200,
 	})
 	save_banlist()
 	dt := time.Now()
@@ -208,7 +222,7 @@ func ban_person(username string) {
 		"-t",
 		"SAG",
 		fmt.Sprintf(
-			"ban %s Banned for 24 hours from %02d/%02d %02d:%02d:%02d",
+			"ban %s Banned for 12 hours from %02d/%02d %02d:%02d:%02d",
 			username,
 			dt.Local().Month(),
 			dt.Local().Day(),
@@ -302,12 +316,28 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if len(msg) < 1 {
 			return
 		}
-		cmd := exec.Command("tmux", "send-keys", "-t", "SAG", fmt.Sprintf("tellraw @a {\"text\":\"§3[§f%s§3]§f %s\"}", m.Author.Username, msg), "Enter")
-		cmd.Output()
+		for _, s := range config.SESSION {
+			if len(msg) < len(s) + 2 {
+				cmd := exec.Command("tmux", "send-keys", "-t", s, fmt.Sprintf("tellraw @a {\"text\":\"§3[§f%s§3]§f %s\"}", m.Author.Username, msg), "Enter")
+				cmd.Output()
+			} else {
+				if msg[1:len(s) + 1] != s {
+					cmd := exec.Command("tmux", "send-keys", "-t", s, fmt.Sprintf("tellraw @a {\"text\":\"§3[§f%s§3]§f %s\"}", m.Author.Username, msg), "Enter")
+					cmd.Output()
+				}
+			}
+		}
 	}
 	splits := strings.Fields(m.Content)
 	if len(splits) < 1 {
 		return
+	}
+
+	if splits[0] == "list" && m.ChannelID == config.CHATBRIDGE {
+		for _, s := range config.SESSION {
+			cmd := exec.Command("tmux", "send-keys", "-t", s, "list", "Enter")
+			cmd.Output()
+		}
 	}
 
 	if splits[0] == "listbans" {
@@ -380,21 +410,23 @@ func main() {
 		return
 	}
 
-	// Register the messageCreate func as a callback for MessageCreate events.
 	dg.AddHandler(messageCreate)
 
-	// In this example, we only care about receiving message events.
 	dg.Identify.Intents = discordgo.IntentsGuildMessages
 
-	// Open a websocket connection to Discord and begin listening.
 	err = dg.Open()
 	if err != nil {
 		fmt.Println("error opening connection,", err)
 		return
 	}
 
-	cmd := exec.Command("tmux", "pipe-pane", "-t", "SAG", "cat > /tmp/SAG-bot")
-	cmd.Output()
+	config.SESSION = []string{"SAG", "SAGCMP"}
+
+	for _, s := range config.SESSION {
+		first[s] = true
+		cmd := exec.Command("tmux", "pipe-pane", "-t", s, fmt.Sprintf("cat > /tmp/%s-bot", s))
+		cmd.Output()
+	}
 	_, e := os.Stat("./bans.txt")
 	if errors.Is(e, os.ErrNotExist) {
 		fmt.Println("creating new ban list")
@@ -412,7 +444,9 @@ func main() {
 	for {
 		start := time.Now()
 		unban_person()
-		parse_bridge()
+		for _, s := range config.SESSION {
+			parse_bridge(s)
+		}
 		if len(messageCache) > 0 {
 			dg.ChannelMessageSend(config.CHATBRIDGE, clearFormattingOutbound(strings.Join(messageCache, "\n")))
 			messageCache = make([]string, 0)
