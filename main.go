@@ -81,7 +81,7 @@ func parse_bridge(session string) {
 				messageCache = append(messageCache, ":tada: "+line[33:]+" :tada:")
 			}
 		}
-		if !strings.Contains(session, "CMP") {
+		if !strings.Contains(session, "CMP") && line[10:33] == " [Server thread/INFO]: " {
 			check_line(line[33:])
 		}
 		if regex.Match([]byte(line)) {
