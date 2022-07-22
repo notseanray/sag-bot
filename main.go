@@ -69,21 +69,24 @@ func parse_bridge(session string) {
 			continue
 		}
 		if len(line) > 43 {
+			playList := strings.Fields(line[33:])
 			if line[33:43] == "There are " {
-				playList := strings.Fields(line[33:])
 				nameList := ""
 				if len(playList) > 10 {
 					nameList = strings.Join(playList[10:], " ")
 				}
 				messageCache = append(messageCache, fmt.Sprintf("%s: [%s/%s]\n%s", session, playList[2], playList[7], nameList))
 			}
+			if len(playList) > 6 && playList[1] == "has" && !strings.Contains(playList[0], "<") {
+				messageCache = append(messageCache, ":tada: "+line[33:]+" :tada:")
+			}
 		}
-		if !strings.Contains(session, "CMP") {
+		if !strings.Contains(session, "CMP") && line[10:33] == " [Server thread/INFO]: " {
 			check_line(line[33:])
 		}
 		if regex.Match([]byte(line)) {
 			// send to dis
-			messageCache = append(messageCache, fmt.Sprintf("[%s] ", session) + line[33:])
+			messageCache = append(messageCache, fmt.Sprintf("[%s] ", session)+line[33:])
 		}
 	}
 
@@ -94,6 +97,9 @@ func parse_bridge(session string) {
 		}
 		cmd := exec.Command("tmux", "pipe-pane", "-t", session, fmt.Sprintf("cat > /tmp/%s-bot", session))
 		cmd.Output()
+		for l, _ := range current_line {
+			current_line[l] = 0
+		}
 	}
 }
 
@@ -317,14 +323,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 		for _, s := range config.SESSION {
-			if len(msg) < len(s) + 2 {
+			if len(msg) < len(s)+2 || msg[1:len(s)+1] != s {
 				cmd := exec.Command("tmux", "send-keys", "-t", s, fmt.Sprintf("tellraw @a {\"text\":\"§3[§f%s§3]§f %s\"}", m.Author.Username, msg), "Enter")
 				cmd.Output()
-			} else {
-				if msg[1:len(s) + 1] != s {
-					cmd := exec.Command("tmux", "send-keys", "-t", s, fmt.Sprintf("tellraw @a {\"text\":\"§3[§f%s§3]§f %s\"}", m.Author.Username, msg), "Enter")
-					cmd.Output()
-				}
 			}
 		}
 	}
@@ -352,7 +353,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				),
 			)
 		}
-		s.ChannelMessageSend(m.ChannelID, strings.Join(banList, "\n"))
+		s.ChannelMessageSend(m.ChannelID, clearFormattingOutbound(strings.Join(banList, "\n")))
 		if len(banList) < 1 {
 			s.ChannelMessageSend(m.ChannelID, "no bans at this time")
 		}
